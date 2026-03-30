@@ -1,12 +1,45 @@
 import { Link, useParams } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { db } from "../firebase";
-import { collection, query, where, onSnapshot } from "firebase/firestore";
+import { db, storage, auth } from "../firebase";
+
+import {
+  collection,
+  query,
+  where,
+  onSnapshot,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  doc,
+} from "firebase/firestore";
+
+import {
+  ref,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject,
+} from "firebase/storage";
+
+import { onAuthStateChanged } from "firebase/auth";
+import { Plus, Edit, Trash2 } from "lucide-react";
+import { createPortal } from "react-dom";
 
 function Times() {
   const { grupoId, retiroId } = useParams();
+
   const [lista, setLista] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editando, setEditando] = useState(null);
+
+  const [nome, setNome] = useState("");
+  const [file, setFile] = useState(null);
+
+  useEffect(() => {
+    onAuthStateChanged(auth, (u) => setIsAdmin(!!u));
+  }, []);
 
   useEffect(() => {
     const q = query(collection(db, "times"), where("retiroId", "==", retiroId));
@@ -23,68 +56,166 @@ function Times() {
     return () => unsub();
   }, [retiroId]);
 
-  if (loading)
-    return (
-      <p className="text-center p-10 dark:text-gray-400">
-        Carregando grupos...
-      </p>
-    );
+  // ====================
+  // MODAL
+  // ====================
+  const abrirNovo = () => {
+    setEditando(null);
+    setNome("");
+    setFile(null);
+    setModalOpen(true);
+  };
 
-  if (lista.length === 0) {
-    return (
-      <div className="max-w-4xl mx-auto text-center p-10">
-        <h2 className="text-2xl font-bold dark:text-white mb-2">
-          Grupo de Cursistas
-        </h2>
-        <p className="text-gray-500 dark:text-gray-400">
-          Nenhum grupo encontrado para este retiro.
-        </p>
-      </div>
-    );
-  }
+  const abrirEditar = (t) => {
+    setEditando(t);
+    setNome(t.nome);
+    setModalOpen(true);
+  };
+
+  const salvar = async () => {
+    let url = editando?.foto || "";
+    let path = editando?.fotoPath || "";
+
+    try {
+      if (file) {
+        if (editando?.fotoPath) {
+          await deleteObject(ref(storage, editando.fotoPath));
+        }
+
+        const storageRef = ref(storage, `times/${Date.now()}-${file.name}`);
+
+        await uploadBytes(storageRef, file);
+        url = await getDownloadURL(storageRef);
+        path = storageRef.fullPath;
+      }
+
+      if (editando) {
+        await updateDoc(doc(db, "times", editando.id), {
+          nome,
+          foto: url,
+          fotoPath: path,
+        });
+      } else {
+        await addDoc(collection(db, "times"), {
+          nome,
+          foto: url,
+          fotoPath: path,
+          retiroId,
+        });
+      }
+
+      setModalOpen(false);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const excluir = async (t) => {
+    if (!confirm("Excluir grupo?")) return;
+
+    try {
+      if (t.fotoPath) {
+        await deleteObject(ref(storage, t.fotoPath));
+      }
+
+      await deleteDoc(doc(db, "times", t.id));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // ====================
+
+  if (loading) return <p className="text-center p-10">Carregando...</p>;
 
   return (
     <div className="max-w-6xl mx-auto py-8 px-4">
-      <div className="flex items-center justify-between mb-8 border-b dark:border-gray-700 pb-4">
-        <h2 className="text-3xl font-black text-gray-800 dark:text-white uppercase tracking-tighter">
-          Grupos de Partilha
-        </h2>
-        <span className="bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 px-3 py-1 rounded-full text-sm font-bold">
-          {lista.length} Grupos
-        </span>
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-3xl font-bold">Grupos</h2>
+
+        {isAdmin && (
+          <button
+            onClick={abrirNovo}
+            className="bg-green-600 text-white p-2 rounded-lg"
+          >
+            <Plus />
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-[repeat(auto-fit,minmax(250px,1fr))] gap-6">
         {lista.map((time) => (
           <div
             key={time.id}
-            className="group bg-white dark:bg-gray-800 rounded-2xl overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-300 border border-gray-100 dark:border-gray-700"
+            className="bg-white dark:bg-gray-800 rounded-2xl overflow-hidden shadow relative"
           >
-            {/* Foto do Time */}
-            <div className="h-48 overflow-hidden relative">
-              <img
-                src={time.foto || "/img/placeholder-team.jpg"}
-                alt={time.nome}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-              />
-              <div className="absolute inset-0 bg-gradient-to from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div className="h-48">
+              <img src={time.foto} className="w-full h-full object-cover" />
             </div>
 
-            <div className="p-5 text-center">
-              <h3 className="text-xl font-bold text-gray-800 dark:text-white mb-4">
-                {time.nome}
-              </h3>
+            <div className="p-4 text-center">
+              <h3 className="font-bold">{time.nome}</h3>
 
               <Link
                 to={`/grupo/${grupoId}/retiro/${retiroId}/times/${time.id}/pessoas`}
-                className="inline-block w-full py-3 px-4 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 font-bold rounded-xl hover:bg-blue-600 hover:text-white dark:hover:bg-blue-500 transition-all shadow-sm"
+                className="block mt-3 bg-gray-200 p-2 rounded"
               >
                 Ver cursistas
               </Link>
             </div>
+
+            {isAdmin && (
+              <div className="absolute top-2 right-2 flex gap-2">
+                <button
+                  onClick={() => abrirEditar(time)}
+                  className="bg-yellow-500 p-2 rounded text-white"
+                >
+                  <Edit size={14} />
+                </button>
+
+                <button
+                  onClick={() => excluir(time)}
+                  className="bg-red-500 p-2 rounded text-white"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      {/* MODAL (PORTAL) */}
+      {modalOpen &&
+        createPortal(
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-9999">
+            <div className="bg-white p-6 rounded w-96 flex flex-col gap-2">
+              <h2 className="font-bold">
+                {editando ? "Editar" : "Novo"} Grupo
+              </h2>
+
+              <input
+                placeholder="Nome"
+                value={nome}
+                onChange={(e) => setNome(e.target.value)}
+                className="border p-2"
+              />
+
+              <input type="file" onChange={(e) => setFile(e.target.files[0])} />
+
+              <div className="flex justify-end gap-2 mt-2">
+                <button onClick={() => setModalOpen(false)}>Cancelar</button>
+                <button
+                  onClick={salvar}
+                  className="bg-green-600 text-white px-3 py-1 rounded"
+                >
+                  Salvar
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

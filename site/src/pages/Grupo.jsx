@@ -1,17 +1,45 @@
 import { useParams, Link } from "react-router-dom";
 import { useEffect, useState } from "react";
-import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  onSnapshot,
+  query,
+  where,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+} from "firebase/firestore";
 import { auth, db } from "../firebase";
 import { onAuthStateChanged } from "firebase/auth";
+import {
+  ref,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject,
+} from "firebase/storage";
+import { storage } from "../firebase";
+
 import { Trash2, Edit, Plus } from "lucide-react";
 
 function Grupo() {
   const { id } = useParams();
+
   const [grupo, setGrupo] = useState(null);
   const [retiros, setRetiros] = useState([]);
   const [busca, setBusca] = useState("");
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editando, setEditando] = useState(null);
+
+  const [nome, setNome] = useState("");
+  const [tema, setTema] = useState("");
+  const [data, setData] = useState("");
+  const [local, setLocal] = useState("");
+  const [senha, setSenha] = useState("");
+  const [imagemFile, setImagemFile] = useState(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -32,133 +60,239 @@ function Grupo() {
 
   useEffect(() => {
     const q = query(collection(db, "retiros"), where("grupoid", "==", id));
-    const unsubRetiros = onSnapshot(q, (snapshot) => {
+    const unsub = onSnapshot(q, (snapshot) => {
       const lista = snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
       }));
       setRetiros(lista);
     });
-    return () => unsubRetiros();
+    return () => unsub();
   }, [id]);
 
   const filtrados = retiros.filter((r) =>
     r.nome?.toLowerCase().includes(busca.toLowerCase()),
   );
 
-  if (loading)
-    return (
-      <p className="text-center mt-10 dark:text-gray-400">Carregando...</p>
-    );
-  if (!grupo)
-    return (
-      <p className="text-center mt-10 dark:text-gray-400">
-        Grupo não encontrado
-      </p>
-    );
+  const abrirNovo = () => {
+    setEditando(null);
+    setNome("");
+    setTema("");
+    setData("");
+    setLocal("");
+    setSenha("");
+    setImagemFile(null);
+    setModalOpen(true);
+  };
+
+  const abrirEditar = (r) => {
+    setEditando(r);
+    setNome(r.nome);
+    setTema(r.tema);
+    setData(r.data);
+    setLocal(r.local);
+    setSenha(r.senha);
+    setModalOpen(true);
+  };
+
+  const salvar = async () => {
+    try {
+      let url = editando?.imagem || "";
+      let path = editando?.imagemPath || "";
+
+      if (imagemFile) {
+        if (editando?.imagemPath) {
+          await deleteObject(ref(storage, editando.imagemPath));
+        }
+
+        const storageRef = ref(
+          storage,
+          `retiros/${Date.now()}_${imagemFile.name}`,
+        );
+        await uploadBytes(storageRef, imagemFile);
+        url = await getDownloadURL(storageRef);
+        path = storageRef.fullPath;
+      }
+
+      if (editando) {
+        await updateDoc(doc(db, "retiros", editando.id), {
+          nome,
+          tema,
+          data,
+          local,
+          senha,
+          imagem: url,
+          imagemPath: path,
+        });
+      } else {
+        await addDoc(collection(db, "retiros"), {
+          nome,
+          tema,
+          data,
+          local,
+          senha,
+          grupoid: id,
+          imagem: url,
+          imagemPath: path,
+        });
+      }
+
+      setModalOpen(false);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const excluir = async (e, r) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (!confirm("Excluir retiro?")) return;
+
+    try {
+      if (r.imagemPath) {
+        await deleteObject(ref(storage, r.imagemPath));
+      }
+      await deleteDoc(doc(db, "retiros", r.id));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  if (loading) return <p className="text-center mt-10">Carregando...</p>;
+  if (!grupo) return <p className="text-center mt-10">Grupo não encontrado</p>;
 
   return (
-    <div className="bg-gray-100 dark:bg-gray-900 min-h-screen transition-colors duration-300">
-      {/* HERO / BANNER DO GRUPO */}
-      <div className="relative h-80">
-        <img
-          src={grupo.imagem}
-          className="w-full h-full object-cover"
-          alt={grupo.nome}
-        />
-        <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white text-center p-5 gap-2">
-          <Link
-            to="/"
-            className="absolute top-4 left-6 text-sm hover:underline"
-          >
-            ← Voltar para Home
+    <div className="bg-gray-100 dark:bg-gray-900 min-h-screen">
+      {/* BANNER */}
+      <div className="relative h-72">
+        <img src={grupo.imagem} className="w-full h-full object-cover" />
+        <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white">
+          <Link to="/" className="absolute top-4 left-4">
+            ← Voltar
           </Link>
 
-          <h1 className="text-4xl font-bold drop-shadow-lg">{grupo.nome}</h1>
-          <p className="max-w-xl opacity-90">{grupo.descricao}</p>
-
+          <h1 className="text-3xl font-bold">{grupo.nome}</h1>
           <input
-            type="text"
-            placeholder="Buscar retiro neste grupo..."
+            placeholder="Buscar..."
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
-            className="mt-4 p-2 rounded-lg w-64 text-black outline-none focus:ring-4 focus:ring-blue-500/50 transition-all"
+            className="mt-3 p-2 rounded text-black"
           />
         </div>
       </div>
 
-      <div className="p-6 md:p-10 max-w-7xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
-            Retiros
-          </h2>
+      <div className="p-6 max-w-6xl mx-auto">
+        <div className="flex justify-between mb-6">
+          <h2 className="text-xl font-bold text-white">Retiros</h2>
+
           {isAdmin && (
-            <button className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 shadow-lg transition transform hover:scale-105 active:scale-95">
-              <Plus size={20}></Plus>
+            <button
+              onClick={abrirNovo}
+              className="bg-green-600 text-white p-2 rounded"
+            >
+              <Plus />
             </button>
           )}
         </div>
 
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-8">
-          {filtrados.map((retiro) => (
+        <div className="grid md:grid-cols-3 gap-6">
+          {filtrados.map((r) => (
             <Link
-              key={retiro.id}
-              to={`/grupo/${id}/retiro/${retiro.id}`}
-              className="group block bg-white dark:bg-gray-800 rounded-2xl overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-300 border border-gray-100 dark:border-gray-700 relative"
+              key={r.id}
+              to={`/grupo/${id}/retiro/${r.id}`}
+              className="bg-white dark:bg-gray-800 rounded shadow"
             >
-              <div className="h-48 overflow-hidden">
-                <img
-                  src={retiro.imagem}
-                  className="w-full h-full object-cover group-hover:scale-110 transition duration-500"
-                  alt={retiro.nome}
-                />
-                {isAdmin && (
-                  <div className="absolute top-3 right-3 flex gap-2">
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        alert("editar");
-                      }}
-                      className="p-2 bg-yellow-500 text-white rounded-full hover:bg-yellow-600 shadow-xl backdrop-blur-md transition"
-                    >
-                      <Edit size={20} />
-                    </button>
-                    <button
-                      onClick={(e) => excluirGrupo(e, grupo.id)}
-                      className="p-2 bg-red-500 text-white rounded-full hover:bg-red-600 shadow-xl backdrop-blur-md transition"
-                    >
-                      <Trash2 size={20} />
-                    </button>
-                  </div>
-                )}
+              <div className="h-40">
+                <img src={r.imagem} className="w-full h-full object-cover" />
               </div>
 
-              <div className="p-5 space-y-2">
-                <h3 className="text-xl font-bold text-gray-800 dark:text-white group-hover:text-blue-500 transition">
-                  {retiro.nome}
-                </h3>
-                <p className="text-blue-600 dark:text-blue-400 font-medium text-sm">
-                  ✨ {retiro.tema}
-                </p>
-
-                <div className="text-gray-600 dark:text-gray-400 text-sm space-y-1">
-                  <p>
-                    📅 <strong>Data:</strong> {retiro.data}
-                  </p>
-                  <p>
-                    📍 <strong>Local:</strong> {retiro.local}
-                  </p>
-                </div>
-
-                <div className="mt-4 pt-4 border-t dark:border-gray-700 text-blue-500 text-xs font-bold uppercase">
-                  Ver informações completas →
-                </div>
+              <div className="p-4">
+                <h3 className="font-bold">{r.nome}</h3>
+                <p className="text-sm">{r.tema}</p>
+                <p className="text-sm">{r.data}</p>
+                <p className="text-sm">{r.local}</p>
               </div>
+
+              {isAdmin && (
+                <div className="flex gap-2 p-2">
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      abrirEditar(r);
+                    }}
+                    className="bg-yellow-500 p-2 rounded text-white"
+                  >
+                    <Edit size={16} />
+                  </button>
+
+                  <button
+                    onClick={(e) => excluir(e, r)}
+                    className="bg-red-500 p-2 rounded text-white"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              )}
             </Link>
           ))}
         </div>
       </div>
+
+      {/* MODAL */}
+      {modalOpen && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center">
+          <div className="bg-white p-6 rounded w-96 flex flex-col gap-2">
+            <h2 className="font-bold">{editando ? "Editar" : "Novo"} Retiro</h2>
+
+            <input
+              placeholder="Nome"
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              className="border p-2"
+            />
+            <input
+              placeholder="Tema"
+              value={tema}
+              onChange={(e) => setTema(e.target.value)}
+              className="border p-2"
+            />
+            <input
+              placeholder="Data"
+              value={data}
+              onChange={(e) => setData(e.target.value)}
+              className="border p-2"
+            />
+            <input
+              placeholder="Local"
+              value={local}
+              onChange={(e) => setLocal(e.target.value)}
+              className="border p-2"
+            />
+            <input
+              placeholder="Senha"
+              value={senha}
+              onChange={(e) => setSenha(e.target.value)}
+              className="border p-2"
+            />
+
+            <input
+              type="file"
+              onChange={(e) => setImagemFile(e.target.files[0])}
+            />
+
+            <div className="flex justify-end gap-2 mt-2">
+              <button onClick={() => setModalOpen(false)}>Cancelar</button>
+              <button
+                onClick={salvar}
+                className="bg-green-600 text-white px-3 py-1 rounded"
+              >
+                Salvar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

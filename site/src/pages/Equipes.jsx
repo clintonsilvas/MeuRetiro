@@ -1,12 +1,7 @@
 import { useParams } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { db, auth, storage } from "../firebase";
-import {
-  ref,
-  uploadBytes,
-  getDownloadURL,
-  ref as refStorage,
-} from "firebase/storage";
+import PessoaModal from "./PessoaModal";
 
 import {
   collection,
@@ -16,31 +11,31 @@ import {
   addDoc,
   deleteDoc,
   doc,
-  getDocs,
 } from "firebase/firestore";
 
+import { deleteObject, ref } from "firebase/storage";
 import { onAuthStateChanged } from "firebase/auth";
-import { Trash2, Plus } from "lucide-react";
+import { Trash2, Plus, Edit } from "lucide-react";
 
 function Equipes() {
-  const { retiroId } = useParams();
+  const { grupoId, retiroId } = useParams();
 
   const [equipes, setEquipes] = useState([]);
   const [participacoes, setParticipacoes] = useState([]);
   const [pessoas, setPessoas] = useState([]);
+
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [openModal, setOpenModal] = useState(false);
-  const [nome, setNome] = useState("");
-  const [descricao, setDescricao] = useState("");
-  const [file, setFile] = useState(null);
+
+  const [modalPessoa, setModalPessoa] = useState(false);
+  const [equipeAtual, setEquipeAtual] = useState(null);
+  const [pessoaEditando, setPessoaEditando] = useState(null);
+
+  const [openPessoa, setOpenPessoa] = useState(null);
 
   // 🔐 ADMIN
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setIsAdmin(!!user);
-    });
-    return () => unsub();
+    onAuthStateChanged(auth, (user) => setIsAdmin(!!user));
   }, []);
 
   // 📦 EQUIPES
@@ -50,232 +45,219 @@ function Equipes() {
       where("retiroId", "==", retiroId),
     );
 
-    const unsub = onSnapshot(q, (snapshot) => {
-      const lista = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      setEquipes(lista);
+    return onSnapshot(q, (snap) => {
+      setEquipes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setLoading(false);
     });
-
-    return () => unsub();
   }, [retiroId]);
 
-  // 🔗 PARTICIPACOES
+  // 🔗 PARTICIPAÇÕES (filtra por grupo)
   useEffect(() => {
     const q = query(
       collection(db, "participacoes"),
-      where("retiroId", "==", retiroId),
+      where("grupoId", "==", grupoId),
     );
 
-    const unsub = onSnapshot(q, (snapshot) => {
-      const lista = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      setParticipacoes(lista);
+    return onSnapshot(q, (snap) => {
+      setParticipacoes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
+  }, [grupoId]);
 
-    return () => unsub();
-  }, [retiroId]);
-
-  // 👤 PESSOAS
+  // 👤 PESSOAS (somente do grupo)
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "pessoas"), (snapshot) => {
-      const lista = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-      setPessoas(lista);
+    let unsubPessoas;
+
+    const q = query(
+      collection(db, "participacoes"),
+      where("grupoId", "==", grupoId),
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
+      const ids = snap.docs.map((d) => d.data().pessoaId);
+
+      if (ids.length === 0) {
+        setPessoas([]);
+        return;
+      }
+
+      const qPessoas = query(
+        collection(db, "pessoas"),
+        where("__name__", "in", ids.slice(0, 10)),
+      );
+
+      unsubPessoas = onSnapshot(qPessoas, (snap2) => {
+        setPessoas(
+          snap2.docs.map((d) => ({
+            id: d.id,
+            ...d.data(),
+          })),
+        );
+      });
     });
 
-    return () => unsub();
-  }, []);
+    return () => {
+      unsub();
+      if (unsubPessoas) unsubPessoas();
+    };
+  }, [grupoId]);
 
-  // 🔎 pegar pessoas da equipe
   const getPessoasEquipe = (equipeId) => {
     return participacoes
       .filter((p) => p.equipeId === equipeId)
-      .map((p) => pessoas.find((pes) => pes.id === p.pessoaId))
+      .map((p) => ({
+        ...pessoas.find((x) => x.id === p.pessoaId),
+        participacaoId: p.id,
+      }))
       .filter(Boolean);
   };
 
-  // ➕ ADD EQUIPE
-  const criarEquipe = async () => {
-    if (!nome) return alert("Nome obrigatório");
-
-    let url = "";
-
-    if (file) {
-      const storageRef = ref(storage, `equipes/${Date.now()}-${file.name}`);
-
-      await uploadBytes(storageRef, file);
-      url = await getDownloadURL(storageRef);
-    }
-
-    await addDoc(collection(db, "equipes"), {
-      nome,
-      descricao,
-      foto: url,
-      retiroId,
-    });
-
-    setOpenModal(false);
-    setNome("");
-    setDescricao("");
-    setFile(null);
+  // =====================
+  // MODAL
+  // =====================
+  const abrirPessoa = (eq, pessoa = null) => {
+    setEquipeAtual(eq);
+    setPessoaEditando(pessoa);
+    setModalPessoa(true);
   };
 
-  const removerEquipe = async (id) => {
-    await fetch(`http://localhost:3000/equipes/${id}`, {
-      method: "DELETE",
-    });
-  };
-
-  // ➕ ADD PESSOA NA EQUIPE
-  const addPessoaEquipe = async (equipeId) => {
-    const pessoaId = prompt("ID da pessoa:");
-    if (!pessoaId) return;
-
+  const salvarPessoa = async (pessoaId) => {
+    // vincula pessoa à equipe
     await addDoc(collection(db, "participacoes"), {
       pessoaId,
+      equipeId: equipeAtual.id,
       retiroId,
-      equipeId,
+      grupoId,
     });
+
+    setModalPessoa(false);
   };
 
-  // 🗑️ REMOVE PESSOA
-  const removePessoa = async (participacaoId) => {
-    if (!confirm("Remover pessoa?")) return;
-    await deleteDoc(doc(db, "participacoes", participacaoId));
+  const excluirPessoa = async (p) => {
+    if (!confirm("Excluir pessoa?")) return;
+
+    try {
+      if (p.fotoPath) {
+        await deleteObject(ref(storage, p.fotoPath));
+      }
+
+      await deleteDoc(doc(db, "pessoas", p.id));
+      await deleteDoc(doc(db, "participacoes", p.participacaoId));
+    } catch (err) {
+      console.error(err);
+    }
   };
 
-  if (loading) return <p className="text-center p-10">Buscando equipes...</p>;
+  const excluirEquipe = async (eq) => {
+    if (!confirm("Excluir equipe?")) return;
+
+    try {
+      if (eq.fotoPath) {
+        await deleteObject(ref(storage, eq.fotoPath));
+      }
+      await deleteDoc(doc(db, "equipes", eq.id));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // =====================
+
+  if (loading) return <p className="p-10">Carregando...</p>;
 
   return (
-    <div className="max-w-5xl mx-auto space-y-12 py-8">
-      {/* ADMIN ADD EQUIPE */}
-      {isAdmin && (
-        <button
-          onClick={() => setOpenModal(true)}
-          className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg"
-        >
-          <Plus size={18} /> Nova Equipe
-        </button>
-      )}
-
+    <div className="max-w-6xl mx-auto space-y-10 py-10">
       {equipes.map((eq) => (
         <div
           key={eq.id}
-          className="flex flex-col md:flex-row bg-white dark:bg-gray-800 rounded-3xl overflow-hidden shadow-lg relative"
+          className="bg-white dark:bg-gray-800 rounded-3xl shadow-lg overflow-hidden flex flex-col md:flex-row"
         >
-          {/* FOTO */}
-          <div className="md:w-1/3 h-64">
+          {/* IMAGEM */}
+          <div className="md:w-1/3 h-64 md:h-auto">
             <img src={eq.foto} className="w-full h-full object-cover" />
           </div>
 
-          <div className="p-6 md:w-2/3">
+          {/* CONTEUDO */}
+          <div className="p-6 flex-1">
             <div className="flex justify-between items-center">
               <h2 className="text-2xl font-bold">{eq.nome}</h2>
 
               {isAdmin && (
                 <button
-                  onClick={() => removeEquipe(eq.id)}
+                  onClick={() => excluirEquipe(eq)}
                   className="p-2 bg-red-500 text-white rounded-full"
                 >
-                  <Trash2 size={18} />
+                  <Trash2 size={16} />
                 </button>
               )}
             </div>
 
-            {/* ADD PESSOA */}
             {isAdmin && (
               <button
-                onClick={() => addPessoaEquipe(eq.id)}
-                className="mt-3 text-sm text-blue-500"
+                onClick={() => abrirPessoa(eq)}
+                className="mt-3 text-blue-500 flex items-center gap-1"
               >
-                + adicionar pessoa
+                <Plus size={16} /> pessoa
               </button>
             )}
 
-            {/* PESSOAS */}
+            {/* LISTA */}
             <div className="mt-4 space-y-2">
-              {getPessoasEquipe(eq.id).map((pessoa) => {
-                const part = participacoes.find(
-                  (x) => x.pessoaId === pessoa.id && x.equipeId === eq.id,
-                );
-
-                return (
+              {getPessoasEquipe(eq.id).map((p) => (
+                <div
+                  key={p.id}
+                  className="bg-gray-100 dark:bg-gray-700 rounded-lg"
+                >
                   <div
-                    key={pessoa.id}
-                    className="flex justify-between items-center p-3 bg-gray-100 dark:bg-gray-700 rounded-lg"
+                    onClick={() =>
+                      setOpenPessoa(openPessoa === p.id ? null : p.id)
+                    }
+                    className="flex justify-between items-center p-3 cursor-pointer"
                   >
-                    <span>{pessoa.nome}</span>
+                    <div className="flex items-center gap-2">
+                      <img
+                        src={p.foto}
+                        className="w-8 h-8 rounded-full object-cover"
+                      />
+                      <span>{p.nome}</span>
+                    </div>
 
                     {isAdmin && (
-                      <button
-                        onClick={() => removePessoa(part.id)}
-                        className="text-red-500"
+                      <div
+                        className="flex gap-2"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        <Trash2 size={16} />
-                      </button>
+                        <button onClick={() => abrirPessoa(eq, p)}>
+                          <Edit size={16} />
+                        </button>
+                        <button onClick={() => excluirPessoa(p)}>
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
                     )}
                   </div>
-                );
-              })}
+
+                  {openPessoa === p.id && (
+                    <div className="px-4 pb-3 text-sm space-y-1">
+                      <p>📍 {p.local}</p>
+                      <p>📞 {p.telefone}</p>
+                      <p>📸 {p.instagram}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         </div>
       ))}
-      {openModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <h2 className="text-xl font-bold mb-4 dark:text-white">
-              Nova Equipe
-            </h2>
-
-            <div className="space-y-3">
-              <input
-                type="text"
-                placeholder="Nome da equipe"
-                value={nome}
-                onChange={(e) => setNome(e.target.value)}
-                className="w-full p-2 rounded-lg border dark:bg-gray-700"
-              />
-
-              <textarea
-                placeholder="Descrição"
-                value={descricao}
-                onChange={(e) => setDescricao(e.target.value)}
-                className="w-full p-2 rounded-lg border dark:bg-gray-700"
-              />
-
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => setFile(e.target.files[0])}
-                className="w-full text-sm"
-              />
-            </div>
-
-            <div className="flex justify-end gap-3 mt-6">
-              <button
-                onClick={() => setOpenModal(false)}
-                className="px-4 py-2 rounded-lg bg-gray-300 dark:bg-gray-600"
-              >
-                Cancelar
-              </button>
-
-              <button
-                onClick={criarEquipe}
-                className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
-              >
-                Criar
-              </button>
-            </div>
-          </div>
-        </div>
+      {modalPessoa && (
+        <PessoaModal
+          open={modalPessoa}
+          onClose={() => setModalPessoa(false)}
+          pessoa={pessoaEditando}
+          onSave={salvarPessoa}
+          pessoasExistentes={pessoas}
+          modo="equipe"
+        />
       )}
     </div>
   );

@@ -1,9 +1,24 @@
 import { Link, useNavigate } from "react-router-dom";
 import { db, auth } from "../firebase";
-import { collection, deleteDoc, doc, onSnapshot } from "firebase/firestore";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  addDoc,
+  updateDoc,
+} from "firebase/firestore";
 import { onAuthStateChanged, signOut } from "firebase/auth";
+import {
+  ref,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject,
+} from "firebase/storage";
+import { storage } from "../firebase";
+
 import { useEffect, useState } from "react";
-import { Trash2, Edit, Plus, LogOut, Sun, Moon } from "lucide-react";
+import { Trash2, Edit, Plus } from "lucide-react";
 
 function Home() {
   const [busca, setBusca] = useState("");
@@ -11,6 +26,14 @@ function Home() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadedImages, setLoadedImages] = useState({});
+
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editando, setEditando] = useState(null);
+
+  const [nome, setNome] = useState("");
+  const [descricao, setDescricao] = useState("");
+  const [imagemFile, setImagemFile] = useState(null);
+
   const navigate = useNavigate();
 
   const filtrados = grupos.filter((g) =>
@@ -40,40 +63,97 @@ function Home() {
     navigate("/");
   };
 
-  const excluirGrupo = async (e, id) => {
+  const excluirGrupo = async (e, grupo) => {
     e.preventDefault();
     e.stopPropagation();
+
     if (!confirm("Excluir grupo?")) return;
-    await deleteDoc(doc(db, "grupos", id));
+
+    try {
+      if (grupo.imagemPath) {
+        await deleteObject(ref(storage, grupo.imagemPath));
+      }
+      await deleteDoc(doc(db, "grupos", grupo.id));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const abrirModalNovo = () => {
+    setEditando(null);
+    setNome("");
+    setDescricao("");
+    setImagemFile(null);
+    setModalOpen(true);
+  };
+
+  const abrirModalEditar = (grupo) => {
+    setEditando(grupo);
+    setNome(grupo.nome);
+    setDescricao(grupo.descricao);
+    setModalOpen(true);
+  };
+
+  const salvarGrupo = async () => {
+    try {
+      let url = editando?.imagem || "";
+      let path = editando?.imagemPath || "";
+
+      if (imagemFile) {
+        // excluir antiga se existir
+        if (editando?.imagemPath) {
+          await deleteObject(ref(storage, editando.imagemPath));
+        }
+
+        const storageRef = ref(
+          storage,
+          `grupos/${Date.now()}_${imagemFile.name}`,
+        );
+        await uploadBytes(storageRef, imagemFile);
+        url = await getDownloadURL(storageRef);
+        path = storageRef.fullPath;
+      }
+
+      if (editando) {
+        await updateDoc(doc(db, "grupos", editando.id), {
+          nome,
+          descricao,
+          imagem: url,
+          imagemPath: path,
+        });
+      } else {
+        await addDoc(collection(db, "grupos"), {
+          nome,
+          descricao,
+          imagem: url,
+          imagemPath: path,
+        });
+      }
+
+      setModalOpen(false);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   return (
-    <div className="bg-gray-100 dark:bg-gray-900 min-h-screen transition-colors duration-300">
-      {/* NAVBAR */}
-      <nav className="bg-white dark:bg-gray-800 shadow-md p-4 flex justify-between items-center px-6 md:px-10 sticky top-0 z-50 transition-colors">
-        <h2 className="font-bold text-blue-600 dark:text-blue-400 text-xl text-shadow-sm">
-          Meu Retiro Católico
-        </h2>
+    <div className="bg-gray-100 dark:bg-gray-900 min-h-screen">
+      {/* NAV */}
+      <nav className="bg-white dark:bg-gray-800 shadow-md p-4 flex justify-between">
+        <h2 className="font-bold text-blue-600 text-xl">Meu Retiro Católico</h2>
 
-        <div className="flex gap-4 items-center">
-          <Link
-            to="/"
-            className="hover:text-blue-500 dark:text-gray-300 dark:hover:text-blue-400 font-medium"
-          >
-            Home
-          </Link>
-
+        <div className="flex gap-4">
           {isAdmin ? (
             <button
               onClick={handleLogout}
-              className="bg-red-500 text-white px-4 py-1 rounded-lg hover:bg-red-600 transition"
+              className="bg-red-500 text-white px-4 py-1 rounded"
             >
               Sair
             </button>
           ) : (
             <Link
               to="/login"
-              className="bg-blue-500 text-white px-4 py-1 rounded-lg hover:bg-blue-600 transition"
+              className="bg-blue-500 text-white px-4 py-1 rounded"
             >
               Login
             </Link>
@@ -82,104 +162,124 @@ function Home() {
       </nav>
 
       {/* BANNER */}
-      <div className="relative h-80">
+      <div className="relative h-72">
         <img src="/img/banner.jpg" className="w-full h-full object-cover" />
-        <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white text-center p-5 gap-2">
-          <h1 className="text-4xl font-bold drop-shadow-lg">
-            Meu Retiro Católico
-          </h1>
-          <p className="opacity-90">
-            Encontre grupos, retiros e viva essa experiência
-          </p>
+        <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center text-white">
+          <h1 className="text-3xl font-bold">Meu Retiro Católico</h1>
           <input
-            type="text"
-            placeholder="Buscar grupo..."
+            placeholder="Buscar..."
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
-            className="mt-2 p-2 rounded-lg w-64 text-black outline-none focus:ring-4 focus:ring-blue-500/50 transition-all"
+            className="mt-3 p-2 rounded text-black"
           />
         </div>
       </div>
 
-      <div className="p-6 md:p-10p-6 md:p-10 max-w-7xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
-            Grupos Disponíveis
-          </h2>
+      <div className="p-6 max-w-6xl mx-auto">
+        <div className="flex justify-between mb-6">
+          <h2 className="text-xl font-bold text-blue-700">Grupos</h2>
+
           {isAdmin && (
-            <button className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 shadow-lg transition transform hover:scale-105 active:scale-95">
-              <Plus size={20}></Plus>
+            <button
+              onClick={abrirModalNovo}
+              className="bg-green-600 text-white p-2 rounded"
+            >
+              <Plus />
             </button>
           )}
         </div>
 
-        {loading && (
-          <p className="text-center text-gray-500 animate-pulse">
-            Carregando...
-          </p>
-        )}
+        {loading && <p>Carregando...</p>}
 
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-8">
+        <div className="grid md:grid-cols-3 gap-6">
           {filtrados.map((grupo) => (
             <Link
               key={grupo.id}
               to={`/grupo/${grupo.id}`}
-              className="group block bg-white dark:bg-gray-800 rounded-2xl overflow-hidden shadow-sm hover:shadow-2xl transition-all duration-300 border border-gray-100 dark:border-gray-700 relative"
+              className="bg-white dark:bg-gray-800 rounded shadow"
             >
-              <div className="relative h-52 w-full bg-gray-200 dark:bg-gray-700">
-                {!loadedImages[grupo.id] && (
-                  <div className="absolute inset-0 bg-linear-to-r from-gray-200 dark:from-gray-700 via-gray-300 dark:via-gray-600 to-gray-200 dark:to-gray-700 animate-pulse" />
-                )}
+              <div className="h-40 bg-gray-200">
                 <img
                   src={grupo.imagem}
-                  className={`w-full h-full object-cover transition-opacity duration-500 ${
-                    loadedImages[grupo.id] ? "opacity-100" : "opacity-0"
-                  }`}
-                  onLoad={() =>
-                    setLoadedImages((p) => ({ ...p, [grupo.id]: true }))
-                  }
+                  className="w-full h-full object-cover"
                 />
-
-                {isAdmin && (
-                  <div className="absolute top-3 right-3 flex gap-2">
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        alert("editar");
-                      }}
-                      className="p-2 bg-yellow-500 text-white rounded-full hover:bg-yellow-600 shadow-xl backdrop-blur-md transition"
-                    >
-                      <Edit size={20} />
-                    </button>
-                    <button
-                      onClick={(e) => excluirGrupo(e, grupo.id)}
-                      className="p-2 bg-red-500 text-white rounded-full hover:bg-red-600 shadow-xl backdrop-blur-md transition"
-                    >
-                      <Trash2 size={20} />
-                    </button>
-                  </div>
-                )}
               </div>
 
-              <div className="p-5">
-                <h2 className="text-xl font-bold text-gray-800 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition">
-                  {grupo.nome}
-                </h2>
-                <p className="text-gray-600 dark:text-gray-400 text-sm mt-2 line-clamp-3">
-                  {grupo.descricao}
-                </p>
-                <div className="mt-5 flex items-center text-blue-500 dark:text-blue-400 font-bold text-xs uppercase tracking-wider">
-                  Ver detalhes do grupo
-                  <span className="ml-2 transition-transform group-hover:translate-x-1">
-                    →
-                  </span>
+              <div className="p-4">
+                <h3 className="font-bold">{grupo.nome}</h3>
+                <p className="text-sm">{grupo.descricao}</p>
+              </div>
+
+              {isAdmin && (
+                <div className="flex gap-2 p-2">
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault();
+                      abrirModalEditar(grupo);
+                    }}
+                    className="bg-yellow-500 p-2 rounded text-white"
+                  >
+                    <Edit size={16} />
+                  </button>
+
+                  <button
+                    onClick={(e) => excluirGrupo(e, grupo)}
+                    className="bg-red-500 p-2 rounded text-white"
+                  >
+                    <Trash2 size={16} />
+                  </button>
                 </div>
-              </div>
+              )}
             </Link>
           ))}
         </div>
       </div>
+
+      {/* MODAL */}
+      {modalOpen && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded w-96 flex flex-col gap-3">
+            <h2 className="font-bold text-lg">
+              {editando ? "Editar" : "Novo"} Grupo
+            </h2>
+
+            <input
+              placeholder="Nome"
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              className="border p-2 rounded"
+            />
+
+            <textarea
+              placeholder="Descrição"
+              value={descricao}
+              onChange={(e) => setDescricao(e.target.value)}
+              className="border p-2 rounded"
+            />
+
+            <input
+              type="file"
+              onChange={(e) => setImagemFile(e.target.files[0])}
+            />
+
+            <div className="flex justify-end gap-2 mt-3">
+              <button
+                onClick={() => setModalOpen(false)}
+                className="px-3 py-1 bg-gray-400 rounded"
+              >
+                Cancelar
+              </button>
+
+              <button
+                onClick={salvarGrupo}
+                className="px-3 py-1 bg-green-600 text-white rounded"
+              >
+                Salvar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
