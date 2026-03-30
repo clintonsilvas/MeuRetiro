@@ -1,0 +1,7 @@
+node_modules
+.env
+.firebase
+functions/node_modules
+api/functions/node_modules
+dist
+build
